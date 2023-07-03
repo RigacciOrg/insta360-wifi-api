@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+
+import logging
+import sys
+import time
+
+import insta360
+
+# Choose logging level: NOTSET, DEBUG, INFO, WARNING, ERROR
+logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s')
+logging.getLogger().setLevel(logging.DEBUG)
+
+cam = insta360.camera(host='192.168.42.1', port=6666)
+cam.Open()
+
+seq = cam.SyncLocalTimeToCamera()
+print('Sent packet SyncLocalTimeToCamera(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.GetCameraInfo()
+print('Sent packet GetCameraInfo(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.GetCaptureSettings()
+print('Sent packet GetCaptureSettings(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.SetCaptureSettings()
+print('Sent packet SetCaptureSettings(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.StartCapture()
+print('Sent packet StartCapture(): seq: %d' % (seq,))
+time.sleep(20)
+seq = cam.StopCapture()
+print('Sent packet StopCapture(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.TakePicture()
+print('Sent packet TakePicture(): seq: %d' % (seq,))
+time.sleep(1)
+
+seq = cam.GetCameraFilesList()
+print('Sent packet GetCameraFilesList(): seq: %d' % (seq,))
+time.sleep(1)
+
+# Live stream video seems to be embedded into the TCP socket data
+# with header prefix '\x01\x00\x00', but the format is unknown.
+#seq = cam.StartLiveStream()
+#print('Sent packet StartLiveStream(): seq: %d' % (seq,))
+#time.sleep(20)
+#seq = cam.StopLiveStream()
+#print('Sent packet StopLiveStream(): seq: %d' % (seq,))
+#time.sleep(1)
+
+# Wait messages eventually in the queue.
+time.sleep(5)
+cam.Close()

@@ -1,0 +1,33 @@
+#!/bin/sh -e
+
+# Extract the Insta360 Proto Buffer files (*.proto) from the library
+# libOne.so contained into the Android app.
+#
+# The protobuf definition files are required to talk to Insta360
+# cameras over the WiFi API.
+#
+# Requirements: google.protobuf Python library and protoc compiler.
+#
+# The from_binary.py script and the utils/* modules were downloaded
+# from https://github.com/marin-m/pbtk
+
+if [ ! -f "libOne.so" ]; then
+    echo "ERROR: File libOne.so not found."
+    echo "Download the Android app from https://www.insta360.com/it/download"
+    echo "The file is inside the apk (zip) file: lib/arm64-v8a/libOne.so"
+    exit 1
+fi
+
+# Extract the .proto source files from the compiled executables.
+# The from_binary.py Python script requires the google.protobuf Python library.
+test -d proto || mkdir proto
+cd proto
+../from_binary.py ../libOne.so
+cd ..
+echo "Proto files were extracted into the proto directory."
+
+# Compile the *.proto source files into Python classes.
+# Requires the protoc compiler from the protobuf-compiler Debian package.
+test -d pb2 || mkdir pb2
+protoc --proto_path='proto/' --python_out='pb2/' proto/*.proto
+echo "Python files were compiled into the pb2 directory."
