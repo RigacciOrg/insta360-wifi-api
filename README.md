@@ -29,8 +29,8 @@ what parameters are accepted.
 
 * SyncLocalTimeToCamera()
 * GetCameraInfo()
-* GetCaptureSettings()
-* SetCaptureSettings()
+* GetNormalVideoOptions()
+* SetNormalVideoOptions()
 * StartCapture()
 * StopCapture()
 * TakePicture()
@@ -60,5 +60,17 @@ print('Sent packet StopCapture(): seq: %d' % (seq,))
 time.sleep(5)
 cam.Close()
 ```
+
+## The insta360-remote program
+
+The **insta360-remote** is a somewhat working example using the 
+insta360.py module. It is a Python program using the curses 
+library, so it can be run into a text terminal. It has the basic 
+functionality required for a remote control: start and stop 
+recording, take picture, set the video resolution and zoom. You 
+can run it from an Android smartphone if you install the 
+[Termux](https://termux.dev/en/) app and the required Python 
+libraries.
+
 
 More info here: [Insta360: WiFi protocol reverse engineering](https://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/insta360_one_rs_wifi_reverse_engineering).
