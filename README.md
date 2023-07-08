@@ -61,6 +61,21 @@ time.sleep(5)
 cam.Close()
 ```
 
+## The Protobuf problem
+
+The messages exchanged from the Android app and the camera
+use the **Protocol Buffers**, which is an open standard by Google.
+
+Unfortunately the protobuf messages are not self-describing; 
+that is, there is no way to tell the names, meaning, or full 
+datatypes of exchanged messages without an external 
+specification. To write an understandable source code you need 
+to extract the specific language description files from a 
+compiled binary file, e.g. a library from the Android app. To 
+run the insta360.py module you need such files compiled for 
+Python. Follow the link at the bottom of this page to get more 
+instructions.
+
 ## The insta360-remote program
 
 The **insta360-remote** is a somewhat working example using the 
