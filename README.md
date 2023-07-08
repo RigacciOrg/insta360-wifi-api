@@ -21,7 +21,7 @@ permanently (brick) the camera.
 ## What is working
 
 Only some of the messages are implemented into the Python
-class, and they do not support any arguments, but you can
+class, and they do not support many arguments, but you can
 read the code and inspect the protobuf definition to know
 what parameters are accepted.
 
