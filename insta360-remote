@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+Remote control program for the Insta360 action camera, developed
+an tested on the Insta360 ONE RS, firmware revision v2.0.8.
+
+It runs in a text terminal using the Python curses library;
+developed and tested with Python 3.9 and curses 2.2.
+
+It requires the insta360.py Python module.
+"""
+
+import insta360
+
+import curses
+import logging
+import sys
+import time
+
+__author__ = "Niccolo Rigacci"
+__copyright__ = "Copyright 2023 Niccolo Rigacci <niccolo@rigacci.org>"
+__license__ = "GPLv3-or-later"
+__email__ = "niccolo@rigacci.org"
+__version__ = "0.1.0"
+
+STATUS_WIN_HEIGHT = 3
+LOG_WIN_HEIGHT = 20
+
+MAIN_MENU = """
+1) Start Capture
+2) Stop Capture
+3) Take Photo
+4) Set Video Resolution
+5) Set Field of View
+6) Gamma & White
+
+Q) Quit
+"""
+VIDEO_RESOLUTION_MENU = """
+1)   4K 60
+2)   4K 30
+3) 2.7K 60
+4) 2.7K 30
+5) 1080 60
+6) 1080 30
+
+9) Back
+"""
+FOV_MENU = """
+1) ULTRAWIDE 17.0 mm
+2) WIDE      21.0 mm
+3) LINEAR    22.2 mm
+4) NARROW    28.9 mm
+5) Tele      50.0 mm
+
+9) Back
+"""
+VIDEO_OPT_MENU = """
+1) Gamma VIVID
+2) Gamma FLAT
+3) Gamma LOG
+4) White Balance
+
+9) Back
+"""
+VIDEO_WHITE_BALANCE = """
+1) AUTO
+2) 2700K
+3) 4000K
+4) 5000K
+5) 6500K
+6) 7500K
+
+9) Back
+"""
+
+logger = None
+win_status = None
+battery_level = None
+free_space = None
+record_resolution = None
+focal_length_value = 0
+fov_type = None
+
+class CursesLogHandler(logging.Handler):
+    """ Logging handler which outputs to a curses window """
+    def __init__(self, screen):
+        logging.Handler.__init__(self)
+        self.screen = screen
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            screen = self.screen
+            fs = "\n%s"
+            screen.addstr(fs % msg)
+            screen.refresh()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            raise
+
+
+def boxed_window_mv(outer, inner, y, x, h, w, title):
+    """ Move and resize a window with border at (x, y) """
+    outer.mvwin(y, x)
+    outer.resize(h, w)
+    outer.box()
+    outer.addstr(0, 2, ' %s ' % (title,))
+    outer.refresh()
+    inner.mvderwin(1, 1)
+    inner.resize(h - 2, w - 2)
+    inner.refresh()
+
+
+def redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_logging, win_logging):
+    """ Calculate the sizes of the windows (menu, status and log) and refresh them """
+    rows, cols = screen.getmaxyx()
+    if rows < 20 or cols < 30:
+        rows = max(20, rows)
+        cols = max(30, cols)
+        screen.resize(rows, cols)
+        rows, cols = screen.getmaxyx()
+    screen.clear()
+    screen.refresh()
+    boxed_window_mv(box_menu, win_menu, 0, 0, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 'Insta360 Remote')
+    boxed_window_mv(box_status, win_status, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, 0, STATUS_WIN_HEIGHT, cols, 'Batt. Charge / SD Free / Resolution / FOV')
+    boxed_window_mv(box_logging, win_logging, rows - LOG_WIN_HEIGHT, 0, LOG_WIN_HEIGHT, cols, 'Logging')
+    win_menu.clear()
+    win_status.clear()
+    win_logging.clear()
+
+
+def pretty_bytes(bytes_int):
+    """ Format a bytes number into a pretty string """
+    if bytes_int is None:
+        return None
+    else:
+        if bytes_int > (1024 ** 3):
+            return '%.1f Gb' % (float(bytes_int) / (1024 ** 3),)
+        elif bytes_int > (1024 ** 2):
+            return '%.0f Mb' % (float(bytes_int) / (1024 ** 2),)
+        else:
+            return '%.0f kb' % (float(bytes_int) / (1024),)
+
+
+def handle_message(msg):
+    """ Handle the messages received from the Insta360 and update the status """
+    global logger, win_status
+    global battery_level, free_space, record_resolution, focal_length_value, fov_type
+    logger.info('Received message: %s' % (msg,))
+    # The Protobuf message is passed as a Python dictionary; beware of
+    # indexes which are camelCase without underscores.
+    # Parse message from GetOptionsResp()
+    try:
+        battery_level = int(msg['value']['batteryStatus']['batteryLevel'])
+    except:
+        pass
+    try:
+        free_space = int(msg['value']['storageState']['freeSpace'])
+    except:
+        pass
+    # Parse message from GetPhotographyOptionsResp()
+    # WARNING: For focal_length_value: 22.0 the corresponding fov_type: FOV_WIDE is not returned.
+    # GetPhotographyOptionsResp: value { record_resolution: RES_1920_1080P24 }
+    # GetPhotographyOptionsResp: value { fov_type: FOV_ULTRAWIDE }
+    # GetPhotographyOptionsResp: value { focal_length_value: 17.399999618530273 }
+    # GetPhotographyOptionsResp: value { gamma_mode: VIVID }
+    #try:
+    #    gamma_mode = msg['value']['gamma_mode']
+    #except:
+    #    gamma_mode = None
+    try:
+        record_resolution = msg['value']['recordResolution']
+    except:
+        pass
+    try:
+        focal_length_value = float(msg['value']['focalLengthValue'])
+    except:
+        pass
+    try:
+        fov_type = msg['value']['fovType'][4:]
+    except:
+        pass
+
+    status = '%s%% / %s / %s / %.1fmm %s' % (battery_level, pretty_bytes(free_space), record_resolution, focal_length_value, fov_type)
+    logger.info('New status: %s' % (status,))
+    win_status.clear()
+    win_status.addstr(status)
+    win_status.refresh()
+
+
+def main(screen):
+    global logger, win_status
+
+    # Initialize curses.
+    curses.initscr()
+    curses.curs_set(0)
+    screen.keypad(True)
+    # Initialize boxes.
+    rows, cols = screen.getmaxyx()
+    box_menu = curses.newwin(rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 0, 0)
+    win_menu = box_menu.derwin(rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT - 2, cols - 2, 1, 1)
+    box_status = curses.newwin(STATUS_WIN_HEIGHT, cols, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, 0)
+    win_status = box_status.derwin(STATUS_WIN_HEIGHT - 2, cols - 2, 1, 1)
+    box_logging = curses.newwin(LOG_WIN_HEIGHT, cols, rows - LOG_WIN_HEIGHT, 0)
+    win_logging = box_logging.derwin(LOG_WIN_HEIGHT - 2, cols - 2, 1, 1)
+    redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_logging, win_logging)
+
+    win_logging.scrollok(True)
+    win_logging.leaveok(True)
+    win_logging.clearok(True)
+
+    # Initialize logging handlers.
+    curses_log_handler = CursesLogHandler(win_logging)
+    formatter_display = logging.Formatter('%(asctime)-8s|%(levelname)-7s|%(message)-s', '%H:%M:%S')
+    curses_log_handler.setFormatter(formatter_display)
+    logger = logging.getLogger('Insta360 Remote')
+    logger.addHandler(curses_log_handler)
+    if True:
+        file_log_handler = logging.FileHandler(filename='remote.log')
+        formatter_file = logging.Formatter('%(asctime)s %(levelname)-8s %(message)s')
+        file_log_handler.setFormatter(formatter_file)
+        logger.addHandler(file_log_handler)
+    logger.setLevel(logging.INFO)
+
+    logger.info('Starting %s' % (sys.argv[0],))
+    cam = insta360.camera(host='192.168.42.1', port=6666, logger=logger, callback=handle_message)
+    cam.Open()
+
+    current_menu = MAIN_MENU
+    win_menu.timeout(10000)
+    cam.GetCameraInfo()
+    cam.GetNormalVideoOptions()
+    while True:
+        win_menu.clear()
+        win_menu.addstr(current_menu)
+        win_menu.refresh()
+        curses.flushinp()
+        key = win_menu.getch()
+        if key == curses.KEY_RESIZE or key == ord('r'):
+            redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_logging, win_logging)
+        elif key == -1:
+            # Timeout waiting key: refresh status.
+            cam.GetCameraInfo()
+            cam.GetNormalVideoOptions()
+            continue
+        if current_menu == MAIN_MENU:
+            if key == ord('1'):
+                cam.StartCapture()
+            elif key == ord('2'):
+                cam.StopCapture()
+            elif key == ord('3'):
+                cam.TakePicture()
+            elif key == ord('4'):
+                current_menu = VIDEO_RESOLUTION_MENU
+            elif key == ord('5'):
+                current_menu = FOV_MENU
+            elif key == ord('6'):
+                current_menu = VIDEO_OPT_MENU
+            elif key == ord('q') or key == ord('Q'):
+                break
+            else:
+                logger.debug('getkey() returned %s' % (key,))
+        elif current_menu == VIDEO_RESOLUTION_MENU:
+            if key == ord('9'):
+                current_menu = MAIN_MENU
+            elif key == ord('1'):
+                cam.SetNormalVideoOptions(record_resolution='RES_3840_2160P60')
+            elif key == ord('2'):
+                cam.SetNormalVideoOptions(record_resolution='RES_3840_2160P30')
+            elif key == ord('3'):
+                cam.SetNormalVideoOptions(record_resolution='RES_2720_1530P60')
+            elif key == ord('4'):
+                cam.SetNormalVideoOptions(record_resolution='RES_2720_1530P30')
+            elif key == ord('5'):
+                cam.SetNormalVideoOptions(record_resolution='RES_1920_1080P60')
+            elif key == ord('6'):
+                cam.SetNormalVideoOptions(record_resolution='RES_1920_1080P30')
+            cam.GetNormalVideoOptions()
+        elif current_menu == FOV_MENU:
+            if key == ord('9'):
+                current_menu = MAIN_MENU
+            elif key == ord('1'):
+                cam.SetNormalVideoOptions(focal_length_value=17.0)
+            elif key == ord('2'):
+                cam.SetNormalVideoOptions(focal_length_value=22.0)
+            elif key == ord('3'):
+                cam.SetNormalVideoOptions(focal_length_value=22.2)
+            elif key == ord('4'):
+                cam.SetNormalVideoOptions(focal_length_value=28.9)
+            elif key == ord('5'):
+                cam.SetNormalVideoOptions(focal_length_value=50.0)
+            cam.GetNormalVideoOptions()
+        elif current_menu == VIDEO_OPT_MENU:
+            if key == ord('9'):
+                current_menu = MAIN_MENU
+            elif key == ord('1'):
+                cam.SetNormalVideoOptions(gamma_mode='VIVID')
+            elif key == ord('2'):
+                cam.SetNormalVideoOptions(gamma_mode='FLAT')
+            elif key == ord('3'):
+                cam.SetNormalVideoOptions(gamma_mode='LOG')
+            elif key == ord('4'):
+                current_menu = VIDEO_WHITE_BALANCE
+        elif current_menu == VIDEO_WHITE_BALANCE:
+            if key == ord('9'):
+                current_menu = VIDEO_OPT_MENU
+
+    cam.Close()
+    curses.endwin()
+
+# Execute the main loop.
+curses.wrapper(main)

@@ -21,12 +21,12 @@ seq = cam.GetCameraInfo()
 print('Sent packet GetCameraInfo(): seq: %d' % (seq,))
 time.sleep(1)
 
-seq = cam.GetCaptureSettings()
-print('Sent packet GetCaptureSettings(): seq: %d' % (seq,))
+seq = cam.GetNormalVideoOptions()
+print('Sent packet GetNormalVideoOptions(): seq: %d' % (seq,))
 time.sleep(1)
 
-seq = cam.SetCaptureSettings()
-print('Sent packet SetCaptureSettings(): seq: %d' % (seq,))
+seq = cam.SetNormalVideoOptions()
+print('Sent packet SetNormalVideoOptions(): seq: %d' % (seq,))
 time.sleep(1)
 
 seq = cam.StartCapture()
@@ -53,6 +53,6 @@ time.sleep(1)
 #print('Sent packet StopLiveStream(): seq: %d' % (seq,))
 #time.sleep(1)
 
-# Wait messages eventually in the queue.
+# Wait messages eventually into the queue.
 time.sleep(5)
 cam.Close()

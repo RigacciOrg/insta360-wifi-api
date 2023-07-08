@@ -11,7 +11,8 @@ Protocol Buffers, plus a 12 bytes header.
 To run this program you need the protobuf definition language
 (the *.proto files) which can be extracted from a binary
 compiled file. The Android app Insta360_v1.42.1.apk has the
-protobuf definition into the libOne.so library.
+protobuf definition into the libOne.so library; you need a
+special tool to extract the files.
 
 This program requires also the Google Proto Buffers Python
 library; you may install it with:
@@ -20,13 +21,13 @@ library; you may install it with:
 
 This program does asyncronous communication: when an instance of
 the insta360.camera() class is instantiated, a background thread
-gets data arriving on the TCP socket, assembling and parsing
+collects data arriving on the TCP socket, assembling and parsing
 Insta360 messages. The main thread may call the varius methods
 of the class to do actions, like insta360.camera.StartCapture(),
 etc.
 
 This program is little more than a proof-of-concept: only some
-methods are implemented and they do not accept yet parameters.
+methods are implemented and they do not accept many parameters.
 
 Web References:
 
@@ -101,19 +102,6 @@ def bytes_to_hex(bytes_string):
     return hex_string
 
 
-def parse_protobuf_message(message_class, message_bytes):
-    """ Parse a protobuf message using the given class """
-    proto_module = message_class.__class__.__module__
-    proto_name = message_class.__class__.__name__
-    try:
-        message = message_class
-        message.ParseFromString(message_bytes)
-        logging.info('Parsed protobuf message "%s.%s()":\n%s' % (proto_module, proto_name, message))
-    except:
-        logging.error('Cannot parse message as "%s.%s()"' % (proto_module, proto_name))
-        message = None
-    return message
-
 
 class camera:
 
@@ -121,7 +109,7 @@ class camera:
     SOCKET_TIMEOUT_SEC = 5.0           # Default timeout for the socket
     PKT_COMPLETE_TIMEOUT_SEC = 4.0     # Timeout for receiving a complete data packet
 
-    KEEPALIVE_INTERVAL_SEC = 1.0
+    KEEPALIVE_INTERVAL_SEC = 2.0
     IS_CONNECTED_TIMEOUT_SEC = 10.0
     RECONNECT_TIMEOUT_SEC = 30.0
 
@@ -151,9 +139,14 @@ class camera:
     CAMERA_NOTIFICATION_STORAGE_FULL = 8199
     CAMERA_NOTIFICATION_CURRENT_CAPTURE_STATUS = 8208
 
-    def __init__(self, host='192.168.42.1', port=6666):
+    def __init__(self, host='192.168.42.1', port=6666, logger=None, callback=None):
         self.connect_host = host
         self.connect_port = port
+        if logger is None:
+            self.logger = logging.getLogger(None)
+        else:
+            self.logger = logger
+        self.callback_handler = callback
         self.camera_socket = None
         self.timer_keepalive = None
         self.message_seq = 0
@@ -174,7 +167,7 @@ class camera:
 
 
     def SignalHandler(self, signum, frame):
-        logging.info('Received signal %d, exiting' % (signum,))
+        self.logger.info('Received signal %d, exiting' % (signum,))
         self.program_killed = True
         self.Close()
         sys.exit(signum)
@@ -184,21 +177,22 @@ class camera:
         """ Open a TCP socket to the camera """
         self.Close()
         self.reconnect_time = time.time()
-        logging.info('Connecting socket to host %s:%d' % (self.connect_host, self.connect_port))
+        self.logger.info('Connecting socket to host %s:%d' % (self.connect_host, self.connect_port))
         try:
             self.camera_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.camera_socket.settimeout(self.SOCKET_TIMEOUT_SEC)
             self.camera_socket.connect((self.connect_host, self.connect_port))
-            logging.debug('Socket opened')
+            self.logger.debug('Socket opened')
         except Exception as ex:
-            logging.error('Exception in socket.connect(): %s' % (ex,))
+            self.logger.error('Exception in socket.connect(): %s' % (ex,))
             self.camera_socket = None
         if not self.program_killed:
             # Mutex lock for socket send/receive.
             self.socket_lock = threading.Lock()
-            # Send the first packet.
+            # Send the first packets.
             self.send_packet(self.PKT_SYNC)
             self.send_packet(self.PKT_KEEPALIVE)
+            self.SyncLocalTimeToCamera()
             # Enable async timers.
             self.timer_keepalive = self.KeepAliveTimer(self.KEEPALIVE_INTERVAL_SEC, self.KeepAlive)
             self.timer_keepalive.start()
@@ -206,7 +200,7 @@ class camera:
 
     def Close(self):
         """ Stop the keep alive timer and close the TCP socket """
-        logging.debug('Stopping keepalive timer and closing socket')
+        self.logger.debug('Stopping keepalive timer and closing socket')
         if self.timer_keepalive is not None:
             self.timer_keepalive.cancel()
             self.timer_keepalive = None
@@ -234,7 +228,7 @@ class camera:
             seq_number = self.message_seq
             self.message_seq += 1
         protobuf_msg = message_class
-        logging.info('Sending message #%d: "%s.%s()"' % (seq_number, proto_module, proto_name))
+        self.logger.info('Sending message #%d: "%s.%s()"' % (seq_number, proto_module, proto_name))
         self.sent_messages_class[seq_number] = type(message_class)
         try:
             json_format.ParseDict(message, protobuf_msg)
@@ -246,7 +240,7 @@ class camera:
             packet = header + protobuf_msg.SerializeToString()
             self.send_packet(packet)
         except Exception as ex:
-            logging.error('Exception in SendMessage(): %s' % (ex,))
+            self.logger.error('Exception in SendMessage(): %s' % (ex,))
             del self.sent_messages_class[seq_number]
         return seq_number
 
@@ -255,17 +249,31 @@ class camera:
         """ Keep the TCP socket alive sending packets regularly """
         if self.is_connected:
             if (time.time() - self.last_pkt_recv_time) > self.IS_CONNECTED_TIMEOUT_SEC:
-                logging.info('Timeout expecting packet: assuming disconnected')
+                self.logger.info('Timeout expecting packet: assuming disconnected')
                 self.is_connected = False
             elif (time.time() - self.last_pkt_sent_time) > self.KEEPALIVE_INTERVAL_SEC:
-                logging.debug('Sending KeepAlive')
+                self.logger.debug('Sending KeepAlive')
                 self.send_packet(self.PKT_KEEPALIVE)
                 self.last_pkt_sent_time = time.time()
         else:
             # Try a new connection.
             if time.time() - self.reconnect_time > self.RECONNECT_TIMEOUT_SEC:
-                logging.info('KeepAlive: Not connected: trying re-connect')
+                self.logger.info('KeepAlive: Not connected: trying re-connect')
                 self.Open()
+
+
+    def parse_protobuf_message(self, message_class, message_bytes):
+        """ Parse a protobuf message using the given class """
+        proto_module = message_class.__class__.__module__
+        proto_name = message_class.__class__.__name__
+        try:
+            message = message_class
+            message.ParseFromString(message_bytes)
+            self.logger.info('Parsed protobuf message "%s.%s()":\n%s' % (proto_module, proto_name, message))
+        except:
+            self.logger.error('Cannot parse message as "%s.%s()"' % (proto_module, proto_name))
+            message = None
+        return message
 
 
     def send_packet(self, pkt_payload):
@@ -273,7 +281,7 @@ class camera:
         if self.camera_socket is not None:
             pkt_data = bytearray(struct.pack('<i', len(pkt_payload) + 4))
             pkt_data.extend(pkt_payload)
-            logging.info("Sending packet: b'%s%s'" % (bytes_to_hex(pkt_payload[:12]), bytes_to_hexascii(pkt_payload[12:])))
+            self.logger.info("Sending packet: b'%s%s'" % (bytes_to_hex(pkt_payload[:12]), bytes_to_hexascii(pkt_payload[12:])))
             self.socket_send(pkt_data)
             time.sleep(0.1) # Actually 0.02 should suffice.
 
@@ -284,7 +292,7 @@ class camera:
             with self.socket_lock:
                 self.camera_socket.sendall(pkt_data)
         except Exception as ex:
-            logging.error('Exception in socket.sendall(): %s' % (ex,))
+            self.logger.error('Exception in socket.sendall(): %s' % (ex,))
             return False
         return True
 
@@ -295,7 +303,7 @@ class camera:
         time.sleep(0.12)
         # Start an infinite loop to receive packets.
         while True:
-            logging.debug('Loop receive_packet() thread')
+            self.logger.debug('Loop receive_packet() thread')
             if self.camera_socket is None:
                 time.sleep(1.0)
                 continue
@@ -306,27 +314,27 @@ class camera:
             poller.register(self.camera_socket, select.POLLIN)
             # Loop waiting a packet to be complete.
             while True:
-                logging.debug("Receiving buffer: b'%s'" % (bytes_to_hexascii(self.rcv_buffer,)))
+                self.logger.debug("Receiving buffer: b'%s'" % (bytes_to_hexascii(self.rcv_buffer,)))
                 if pkt_len is None and len(self.rcv_buffer) >= 4:
                     pkt_len = int.from_bytes(self.rcv_buffer[0:4], byteorder='little')
-                    logging.debug('Received begin of packet, length = %d' % (pkt_len,))
+                    self.logger.debug('Received begin of packet, length = %d' % (pkt_len,))
                 if pkt_len is not None and len(self.rcv_buffer) >= pkt_len:
-                    logging.debug('Packet is complete, len(rcv_buffer): %s' % (len(self.rcv_buffer,)))
+                    self.logger.debug('Packet is complete, len(rcv_buffer): %s' % (len(self.rcv_buffer,)))
                     pkt_data = self.rcv_buffer[4:pkt_len]
                     self.rcv_buffer = self.rcv_buffer[pkt_len:]
                     break
                 # Packet is not complete wait data from the socket.
                 try:
-                    logging.debug('Polling socket for data')
+                    self.logger.debug('Polling socket for data')
                     evts = poller.poll(int(self.PKT_COMPLETE_TIMEOUT_SEC * 1000))
                     for sock, evt in evts:
                         if evt and select.POLLIN:
                             if self.camera_socket is not None and sock == self.camera_socket.fileno():
                                 self.rcv_buffer += self.camera_socket.recv(4096)
                 except Exception as ex:
-                    logging.error('Exception in receive_packet(): %s' % (ex,))
+                    self.logger.error('Exception in receive_packet(): %s' % (ex,))
                 if time.time() - t0 > self.PKT_COMPLETE_TIMEOUT_SEC:
-                    logging.warning("Timeout in receive_packet(). Discarding buffer: b'%s'" % (bytes_to_hexascii(self.rcv_buffer),))
+                    self.logger.warning("Timeout in receive_packet(). Discarding buffer: b'%s'" % (bytes_to_hexascii(self.rcv_buffer),))
                     break
             # The packet is complete or receiving complete packet timeout.
             self.parse_packet(pkt_data)
@@ -348,7 +356,7 @@ class camera:
 
         header = pkt_data[:12]
         body = pkt_data[12:]
-        logging.debug("Received packet: b'%s%s'" % (bytes_to_hex(header), bytes_to_hexascii(body)))
+        self.logger.debug("Received packet: b'%s%s'" % (bytes_to_hex(header), bytes_to_hexascii(body)))
         # Responses to messages (header is [:10], protobuf is at [12:])
         # b'\x04\x00\x00\xc8\x00\x02\x1d\x00\x00\x80\x00\x00'  # GetOptionsResp 'LOCAL_TIME', 'TIME_ZONE'
         # b'\x04\x00\x00\xc8\x00\x02\x1e\x00\x00\x80\x3f\x00'  # GetOptionsResp BATTERY_STATUS, STORAGE_STATE, CAMERA_TYPE, FIRMWAREREVISION
@@ -374,32 +382,32 @@ class camera:
         unknown_3       = pkt_data[10:11]   # 3f, bf, 63, 00, 40, 41, 76, 58, 31
         unknown_4       = pkt_data[11:12]   # 00, ee, ff, 85, 6b, d8, d0, f4, 5c, 0b, 34
 
-        logging.info("Received message: type: b'%s', code: %d, seq: %d" % (bytes_to_hex(response_type), response_code, response_seq))
+        self.logger.info("Received message: type: b'%s', code: %d, seq: %d" % (bytes_to_hex(response_type), response_code, response_seq))
 
         if response_code == self.RESPONSE_CODE_ERROR:
-            message = parse_protobuf_message(error_pb2.Error(), body)
+            message = self.parse_protobuf_message(error_pb2.Error(), body)
             if message is not None:
                 err_message = message.message
                 err_code = error_pb2.Error.ErrorCode.Name(message.code)
-                logging.error('Message #%d raised %s "%s"' % (response_seq, err_code, err_message))
+                self.logger.error('Message #%d raised %s "%s"' % (response_seq, err_code, err_message))
             if response_seq in self.sent_messages_class:
                 del self.sent_messages_class[response_seq]
             return
 
         if response_code == self.CAMERA_NOTIFICATION_CURRENT_CAPTURE_STATUS:
-            message = parse_protobuf_message(current_capture_status_pb2.CaptureStatus(), body)
+            message = self.parse_protobuf_message(current_capture_status_pb2.CaptureStatus(), body)
             if message is not None:
                 msg_state = capture_state_pb2.CameraCaptureState.Name(message.state)
                 msg_time = message.capture_time
-                logging.info('Capture state notification: %s, time: %d' % (msg_state, msg_time))
+                self.logger.info('Capture state notification: %s, time: %d' % (msg_state, msg_time))
             return
 
         if response_code == self.CAMERA_NOTIFICATION_STORAGE_UPDATE:
-            message = parse_protobuf_message(storage_update_pb2.NotificationCardUpdate(), body)
+            message = self.parse_protobuf_message(storage_update_pb2.NotificationCardUpdate(), body)
             if message is not None:
                 msg_state = storage_pb2.CardState.Name(message.state)
                 msg_location = storage_pb2.CardLocation.Name(message.location)
-                logging.info('Storage update notification: %s, location: %s' % (msg_state, msg_location))
+                self.logger.info('Storage update notification: %s, location: %s' % (msg_state, msg_location))
             return
 
         # If response sequence is not into the sent list, do not parse the response.
@@ -410,24 +418,29 @@ class camera:
         sent_msg_class = self.sent_messages_class[response_seq]
         proto_module = sent_msg_class.__module__
         proto_name = sent_msg_class.__name__
-        logging.info('Received response #%d to message "%s.%s()"' % (response_seq, proto_module, proto_name))
+        self.logger.info('Received response #%d to message "%s.%s()"' % (response_seq, proto_module, proto_name))
 
+        message = None
         if sent_msg_class == type(get_options_pb2.GetOptions()):
-            message = parse_protobuf_message(get_options_pb2.GetOptionsResp(), body)
+            message = self.parse_protobuf_message(get_options_pb2.GetOptionsResp(), body)
             # TODO: Save some options into self object properties.
         elif sent_msg_class == type(set_options_pb2.SetOptions()):
-            message = parse_protobuf_message(set_options_pb2.SetOptionsResp(), body)
+            message = self.parse_protobuf_message(set_options_pb2.SetOptionsResp(), body)
         elif sent_msg_class == type(get_file_list_pb2.GetFileList()):
-            message = parse_protobuf_message(get_file_list_pb2.GetFileListResp(), body)
+            message = self.parse_protobuf_message(get_file_list_pb2.GetFileListResp(), body)
         elif sent_msg_class == type(stop_capture_pb2.StopCapture()):
-            message = parse_protobuf_message(stop_capture_pb2.StopCaptureResp(), body)
+            message = self.parse_protobuf_message(stop_capture_pb2.StopCaptureResp(), body)
         elif sent_msg_class == type(take_picture_pb2.TakePicture()):
-            message = parse_protobuf_message(take_picture_pb2.TakePictureResponse(), body)
+            message = self.parse_protobuf_message(take_picture_pb2.TakePictureResponse(), body)
         elif sent_msg_class == type(get_photography_options_pb2.GetPhotographyOptions()):
-            message = parse_protobuf_message(get_photography_options_pb2.GetPhotographyOptionsResp(), body)
+            message = self.parse_protobuf_message(get_photography_options_pb2.GetPhotographyOptionsResp(), body)
 
         # Remove the sequence number from the dictionary of sent messages.
         del self.sent_messages_class[response_seq]
+
+        # Execute the callback function to notify the received message (as a Python dictionary).
+        if message is not None and self.callback_handler is not None:
+            self.callback_handler(json_format.MessageToDict(message))
 
 
     def SyncLocalTimeToCamera(self, timestamp=None, seconds_from_GMT=None):
@@ -448,11 +461,51 @@ class camera:
         return self.SendMessage(message, set_options_pb2.SetOptions(), self.PHONE_COMMAND_SET_OPTIONS)
 
 
+    def TestSetOptions(self, message):
+        """ Send message (a Python dictionary) using set_options_pb2.SetOptions() """
+        # message = {
+        #     'optionTypes': [
+        #         'VIDEO_RESOLUTION'],
+        #     'value': {
+        #         'video_resolution': 'RES_1920_1080P30' } }
+        return self.SendMessage(message, set_options_pb2.SetOptions(), self.PHONE_COMMAND_SET_OPTIONS)
+
+
     def GetCameraInfo(self):
         """ Request updated data about camera, battery and storage """
         # Data retrieved with this function maybe used also by
         # GetBatteryStatus, GetSerialNumber, GetCameraUUID,
         # GetStorageState and GetCameraType.
+        #
+        # WARNING: The value returned by asking for option_types: VIDEO_RESOLUTION,
+        # e.g. value: { video_resolution: RES_3840_2160P60 }, does not match the one
+        # selected on the camera. Ask for GetPhotographyOptions() instead.
+        #
+        # Options actually returned by the Insta360 ONE RS:
+        # [x] BATTERY_STATUS
+        # [x] SERIAL_NUMBER
+        # [x] UUID
+        # [x] STORAGE_STATE
+        # [x] FIRMWAREREVISION
+        # [x] CAMERA_TYPE
+        # [ ] LED_SWITCH
+        # [x] VIDEO_FOV
+        # [x] STILL_FOV
+        # [x] TEMP_VALUE
+        # [x] VIDEO_RESOLUTION (not the actual resolution selected)
+        # [ ] CAPTURE_TIME_LIMIT
+        # [ ] REMAINING_PICTURES
+        # [x] BUTTON_PRESS_OPTIONS
+        # [ ] GAMMA_MODE
+        # [ ] MCTF_ENABLE
+        # [ ] AUTHORIZATION_ID
+        # [ ] STANDBY_DURATION
+        # [ ] QUICK_CAPTURE_ENABLE
+        # [ ] TELEVISION_SYSTEM
+        # [ ] PTZ_CTRL
+        # [ ] CAMERA_POSTURE
+        # [ ] OFFSET_STATES
+        # [ ] OPTIONS_NUM
         message = {
             'optionTypes': [
                 'BATTERY_STATUS',
@@ -460,7 +513,11 @@ class camera:
                 'UUID',
                 'STORAGE_STATE',
                 'FIRMWAREREVISION',
-                'CAMERA_TYPE']
+                'CAMERA_TYPE',
+                'VIDEO_FOV',
+                'TEMP_VALUE',
+                'CAMERA_POSTURE',
+                'OPTIONS_NUM']
         }
         return self.SendMessage(message, get_options_pb2.GetOptions(), self.PHONE_COMMAND_GET_OPTIONS)
 
@@ -470,9 +527,7 @@ class camera:
 
 
     def TakePicture(self):
-        message = {
-            'mode': 'NORMAL'
-        }
+        message = { 'mode': 'NORMAL' }
         return self.SendMessage(message, take_picture_pb2.TakePicture(), self.PHONE_COMMAND_TAKE_PICTURE)
 
 
@@ -492,11 +547,70 @@ class camera:
     def DeleteCameraFile(self):
         pass
 
+
     def DownloadCameraFile(self):
         pass
 
-    def SetVideoCaptureParams(self):
-        pass
+
+    def SetNormalVideoOptions(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None):
+        """ Set video capture settings """
+        # Labels on camera display are not updated.
+        # Resolutions: RES_1920_1080P30, RES_1920_1080P24, ...
+        #message = {
+        #    'optionTypes': [
+        #        'EXPOSURE_BIAS',
+        #        'WHITE_BALANCE_VALUE',
+        #        'VIDEO_GAMMA_MODE',
+        #        'VIDEO_EXPOSURE_OPTIONS',
+        #        'VIDEO_ISO_TOP_LIMIT',
+        #        'RECORD_RESOLUTION',
+        #        'FOV_TYPE',
+        #        'FOCAL_LENGTH_VALUE'],
+        #    'value': {
+        #        'gamma_mode': 'VIVID',
+        #        'video_exposure': {
+        #            'iso': 400,
+        #            'shutter_speed': 0.03333333333333333 },
+        #        'record_resolution': 'RES_1920_1080P30',
+        #        'fov_type': 'FOV_ULTRAWIDE',
+        #        'focal_length_value': 17.4 },
+        #    'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
+        #}
+        message = {}
+        message['optionTypes'] = []
+        message['value'] = {}
+        message['function_mode'] = 'FUNCTION_MODE_NORMAL_VIDEO'
+        if record_resolution is not None:
+            message['optionTypes'].append('RECORD_RESOLUTION')
+            message['value']['record_resolution'] = record_resolution
+        if fov_type is not None:
+            message['optionTypes'].append('FOV_TYPE')
+            message['value']['fov_type'] = fov_type
+        if focal_length_value is not None:
+            message['optionTypes'].append('FOCAL_LENGTH_VALUE')
+            message['value']['focal_length_value'] = focal_length_value
+        if gamma_mode is not None:
+            message['optionTypes'].append('VIDEO_GAMMA_MODE')
+            message['value']['gamma_mode'] = gamma_mode
+        self.logger.info('Sending message: %s' % (message,))
+        return self.SendMessage(message, set_photography_options_pb2.SetPhotographyOptions(), self.PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS)
+
+
+    def GetNormalVideoOptions(self):
+        # WARNING: For focal_length_value: 22.0 the corresponding fov_type: FOV_WIDE is not returned.
+        message = {
+            'option_types': [
+                'EXPOSURE_BIAS',
+                'WHITE_BALANCE_VALUE',
+                'VIDEO_GAMMA_MODE',
+                'VIDEO_EXPOSURE_OPTIONS',
+                'VIDEO_ISO_TOP_LIMIT',
+                'RECORD_RESOLUTION',
+                'FOV_TYPE',
+                'FOCAL_LENGTH_VALUE'],
+            'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
+        }
+        return self.SendMessage(message, get_photography_options_pb2.GetPhotographyOptions(), self.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS)
 
 
     def StartCapture(self):
@@ -517,47 +631,11 @@ class camera:
     def SetExposureSettings(self):
         pass
 
-    def SetCaptureSettings(self):
-        """ Set video capture settings """
-        # Labels on camera display are not updated.
-        # Resolutions: RES_1920_1080P30, RES_1920_1080P24, ...
-        message = {
-            'optionTypes': [
-                'EXPOSURE_BIAS',
-                'WHITE_BALANCE_VALUE',
-                'VIDEO_GAMMA_MODE',
-                'VIDEO_EXPOSURE_OPTIONS',
-                'VIDEO_ISO_TOP_LIMIT',
-                'RECORD_RESOLUTION',
-                'FOV_TYPE',
-                'FOCAL_LENGTH_VALUE'],
-            'value': {
-                'gamma_mode': 'VIVID',
-                'video_exposure': {
-                    'iso': 400,
-                    'shutter_speed': 0.03333333333333333 },
-                'record_resolution': 'RES_1920_1080P30',
-                'fov_type': 'FOV_ULTRAWIDE',
-                'focal_length_value': 17.4 },
-            'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
-        }
-        return self.SendMessage(message, set_photography_options_pb2.SetPhotographyOptions(), self.PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS)
-
+    def SetCaptureSettings(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None):
+        pass
 
     def GetCaptureSettings(self):
-        message = {
-            'option_types': [
-                'EXPOSURE_BIAS',
-                'WHITE_BALANCE_VALUE',
-                'VIDEO_GAMMA_MODE',
-                'VIDEO_EXPOSURE_OPTIONS',
-                'VIDEO_ISO_TOP_LIMIT',
-                'RECORD_RESOLUTION',
-                'FOV_TYPE',
-                'FOCAL_LENGTH_VALUE'],
-            'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
-        }
-        return self.SendMessage(message, get_photography_options_pb2.GetPhotographyOptions(), self.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS)
+        pass
 
 
     def StartLiveStream(self):
