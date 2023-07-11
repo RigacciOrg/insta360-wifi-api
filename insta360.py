@@ -53,6 +53,7 @@ sys.path.append('pb2')
 import capture_state_pb2
 import current_capture_status_pb2
 import error_pb2
+import get_current_capture_status_pb2
 import get_file_list_pb2
 import get_options_pb2
 import get_photography_options_pb2
@@ -102,6 +103,13 @@ def bytes_to_hex(bytes_string):
     return hex_string
 
 
+def protobuf_to_dict(message, response_code=None, message_code=None):
+    """ Convert a protobuf message into a Python dictionary """
+    msg =json_format.MessageToDict(message, including_default_value_fields=True)
+    msg['response_code'] = response_code
+    msg['message_code'] = message_code
+    return msg
+
 
 class camera:
 
@@ -130,6 +138,7 @@ class camera:
     PHONE_COMMAND_GET_FILE_EXTRA = 11
     PHONE_COMMAND_DELETE_FILES = 12
     PHONE_COMMAND_GET_FILE_LIST = 13
+    PHONE_COMMAND_GET_CURRENT_CAPTURE_STATUS = 15
 
     RESPONSE_CODE_OK = 200
     RESPONSE_CODE_ERROR = 500
@@ -137,7 +146,24 @@ class camera:
     CAMERA_NOTIFICATION_BATTERY_LOW = 8196
     CAMERA_NOTIFICATION_STORAGE_UPDATE = 8198
     CAMERA_NOTIFICATION_STORAGE_FULL = 8199
+    CAMERA_NOTIFICATION_CAPTURE_STOPPED = 8201;
     CAMERA_NOTIFICATION_CURRENT_CAPTURE_STATUS = 8208
+
+    # For each message code there is a specific protobuf message class.
+    pb_msg_class = {
+        PHONE_COMMAND_SET_OPTIONS: set_options_pb2.SetOptions(),
+        PHONE_COMMAND_SET_OPTIONS: set_options_pb2.SetOptions(),
+        PHONE_COMMAND_GET_OPTIONS: get_options_pb2.GetOptions(),
+        PHONE_COMMAND_TAKE_PICTURE: take_picture_pb2.TakePicture(),
+        PHONE_COMMAND_GET_FILE_LIST: get_file_list_pb2.GetFileList(),
+        PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS: set_photography_options_pb2.SetPhotographyOptions(),
+        PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS: get_photography_options_pb2.GetPhotographyOptions(),
+        PHONE_COMMAND_START_CAPTURE: start_capture_pb2.StartCapture(),
+        PHONE_COMMAND_STOP_CAPTURE: stop_capture_pb2.StopCapture(),
+        PHONE_COMMAND_START_LIVE_STREAM: start_live_stream_pb2.StartLiveStream(),
+        PHONE_COMMAND_STOP_LIVE_STREAM: stop_live_stream_pb2.StopLiveStream(),
+        PHONE_COMMAND_GET_CURRENT_CAPTURE_STATUS: get_current_capture_status_pb2.CameraCaptureStatus()
+    }
 
     def __init__(self, host='192.168.42.1', port=6666, logger=None, callback=None):
         self.connect_host = host
@@ -150,7 +176,7 @@ class camera:
         self.camera_socket = None
         self.timer_keepalive = None
         self.message_seq = 0
-        self.sent_messages_class = {}
+        self.sent_messages_codes = {}
         self.rcv_thread = None
         self.rcv_buffer = b''
         self.socket_lock = None
@@ -210,7 +236,7 @@ class camera:
             self.camera_socket = None
         self.is_connected = False
         self.message_seq = 0
-        self.sent_messages_class = {}
+        self.sent_messages_codes = {}
 
 
     class KeepAliveTimer(threading.Timer):
@@ -220,16 +246,16 @@ class camera:
                 self.function(*self.args, **self.kwargs)
 
 
-    def SendMessage(self, message, message_class, message_code):
+    def SendMessage(self, message, message_code):
         """ Convert a dictionary into a protobuf message and send it """
-        proto_module = message_class.__class__.__module__
-        proto_name = message_class.__class__.__name__
         with self.socket_lock:
             seq_number = self.message_seq
             self.message_seq += 1
-        protobuf_msg = message_class
+        protobuf_msg = self.pb_msg_class[message_code]
+        proto_module = protobuf_msg.__class__.__module__
+        proto_name = protobuf_msg.__class__.__name__
         self.logger.info('Sending message #%d: "%s.%s()"' % (seq_number, proto_module, proto_name))
-        self.sent_messages_class[seq_number] = type(message_class)
+        self.sent_messages_codes[seq_number] = message_code
         try:
             json_format.ParseDict(message, protobuf_msg)
             header  = b'\x04\x00\x00'
@@ -241,7 +267,7 @@ class camera:
             self.send_packet(packet)
         except Exception as ex:
             self.logger.error('Exception in SendMessage(): %s' % (ex,))
-            del self.sent_messages_class[seq_number]
+            del self.sent_messages_codes[seq_number]
         return seq_number
 
 
@@ -356,7 +382,7 @@ class camera:
 
         header = pkt_data[:12]
         body = pkt_data[12:]
-        self.logger.debug("Received packet: b'%s%s'" % (bytes_to_hex(header), bytes_to_hexascii(body)))
+        self.logger.info("Received packet: b'%s%s'" % (bytes_to_hex(header), bytes_to_hexascii(body)))
         # Responses to messages (header is [:10], protobuf is at [12:])
         # b'\x04\x00\x00\xc8\x00\x02\x1d\x00\x00\x80\x00\x00'  # GetOptionsResp 'LOCAL_TIME', 'TIME_ZONE'
         # b'\x04\x00\x00\xc8\x00\x02\x1e\x00\x00\x80\x3f\x00'  # GetOptionsResp BATTERY_STATUS, STORAGE_STATE, CAMERA_TYPE, FIRMWAREREVISION
@@ -390,9 +416,11 @@ class camera:
                 err_message = message.message
                 err_code = error_pb2.Error.ErrorCode.Name(message.code)
                 self.logger.error('Message #%d raised %s "%s"' % (response_seq, err_code, err_message))
-            if response_seq in self.sent_messages_class:
-                del self.sent_messages_class[response_seq]
+            if response_seq in self.sent_messages_codes:
+                del self.sent_messages_codes[response_seq]
             return
+
+        # TODO: Handle the CAMERA_NOTIFICATION_CAPTURE_STOPPED response code (SD full, etc.)
 
         if response_code == self.CAMERA_NOTIFICATION_CURRENT_CAPTURE_STATUS:
             message = self.parse_protobuf_message(current_capture_status_pb2.CaptureStatus(), body)
@@ -400,6 +428,8 @@ class camera:
                 msg_state = capture_state_pb2.CameraCaptureState.Name(message.state)
                 msg_time = message.capture_time
                 self.logger.info('Capture state notification: %s, time: %d' % (msg_state, msg_time))
+                if self.callback_handler is not None:
+                    self.callback_handler(protobuf_to_dict(message, response_code=response_code))
             return
 
         if response_code == self.CAMERA_NOTIFICATION_STORAGE_UPDATE:
@@ -411,36 +441,39 @@ class camera:
             return
 
         # If response sequence is not into the sent list, do not parse the response.
-        if response_seq not in self.sent_messages_class:
+        if response_seq not in self.sent_messages_codes:
             return
 
         # Parse the protobuf message using the proper message type.
-        sent_msg_class = self.sent_messages_class[response_seq]
-        proto_module = sent_msg_class.__module__
-        proto_name = sent_msg_class.__name__
+        sent_msg_code = self.sent_messages_codes[response_seq]
+        sent_msg_class = self.pb_msg_class[sent_msg_code]
+        proto_module = sent_msg_class.__class__.__module__
+        proto_name = sent_msg_class.__class__.__name__
         self.logger.info('Received response #%d to message "%s.%s()"' % (response_seq, proto_module, proto_name))
 
         message = None
-        if sent_msg_class == type(get_options_pb2.GetOptions()):
+        if sent_msg_code == self.PHONE_COMMAND_GET_OPTIONS:
             message = self.parse_protobuf_message(get_options_pb2.GetOptionsResp(), body)
             # TODO: Save some options into self object properties.
-        elif sent_msg_class == type(set_options_pb2.SetOptions()):
+        elif sent_msg_code == self.PHONE_COMMAND_SET_OPTIONS:
             message = self.parse_protobuf_message(set_options_pb2.SetOptionsResp(), body)
-        elif sent_msg_class == type(get_file_list_pb2.GetFileList()):
+        elif sent_msg_code == self.PHONE_COMMAND_GET_FILE_LIST:
             message = self.parse_protobuf_message(get_file_list_pb2.GetFileListResp(), body)
-        elif sent_msg_class == type(stop_capture_pb2.StopCapture()):
+        elif sent_msg_code == self.PHONE_COMMAND_STOP_CAPTURE:
             message = self.parse_protobuf_message(stop_capture_pb2.StopCaptureResp(), body)
-        elif sent_msg_class == type(take_picture_pb2.TakePicture()):
+        elif sent_msg_code == self.PHONE_COMMAND_TAKE_PICTURE:
             message = self.parse_protobuf_message(take_picture_pb2.TakePictureResponse(), body)
-        elif sent_msg_class == type(get_photography_options_pb2.GetPhotographyOptions()):
+        elif sent_msg_code == self.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS:
             message = self.parse_protobuf_message(get_photography_options_pb2.GetPhotographyOptionsResp(), body)
+        elif sent_msg_code == self.PHONE_COMMAND_GET_CURRENT_CAPTURE_STATUS:
+            message = self.parse_protobuf_message(get_current_capture_status_pb2.GetCurrentCaptureStatusResp(), body)
 
         # Remove the sequence number from the dictionary of sent messages.
-        del self.sent_messages_class[response_seq]
+        del self.sent_messages_codes[response_seq]
 
-        # Execute the callback function to notify the received message (as a Python dictionary).
+        # Execute the callback function to notify the received message.
         if message is not None and self.callback_handler is not None:
-            self.callback_handler(json_format.MessageToDict(message))
+            self.callback_handler(protobuf_to_dict(message, response_code=self.RESPONSE_CODE_OK, message_code=sent_msg_code))
 
 
     def SyncLocalTimeToCamera(self, timestamp=None, seconds_from_GMT=None):
@@ -458,17 +491,12 @@ class camera:
                 'local_time': timestamp,
                 'time_zone_seconds_from_GMT': seconds_from_GMT}
         }
-        return self.SendMessage(message, set_options_pb2.SetOptions(), self.PHONE_COMMAND_SET_OPTIONS)
+        return self.SendMessage(message, self.PHONE_COMMAND_SET_OPTIONS)
 
 
     def TestSetOptions(self, message):
         """ Send message (a Python dictionary) using set_options_pb2.SetOptions() """
-        # message = {
-        #     'optionTypes': [
-        #         'VIDEO_RESOLUTION'],
-        #     'value': {
-        #         'video_resolution': 'RES_1920_1080P30' } }
-        return self.SendMessage(message, set_options_pb2.SetOptions(), self.PHONE_COMMAND_SET_OPTIONS)
+        return self.SendMessage(message, self.PHONE_COMMAND_SET_OPTIONS)
 
 
     def GetCameraInfo(self):
@@ -514,12 +542,11 @@ class camera:
                 'STORAGE_STATE',
                 'FIRMWAREREVISION',
                 'CAMERA_TYPE',
-                'VIDEO_FOV',
                 'TEMP_VALUE',
                 'CAMERA_POSTURE',
                 'OPTIONS_NUM']
         }
-        return self.SendMessage(message, get_options_pb2.GetOptions(), self.PHONE_COMMAND_GET_OPTIONS)
+        return self.SendMessage(message, self.PHONE_COMMAND_GET_OPTIONS)
 
 
     def GetCameraType(self):
@@ -528,7 +555,7 @@ class camera:
 
     def TakePicture(self):
         message = { 'mode': 'NORMAL' }
-        return self.SendMessage(message, take_picture_pb2.TakePicture(), self.PHONE_COMMAND_TAKE_PICTURE)
+        return self.SendMessage(message, self.PHONE_COMMAND_TAKE_PICTURE)
 
 
     def GetSerialNumber(self):
@@ -541,7 +568,7 @@ class camera:
             'media_type': 'VIDEO_AND_PHOTO',
             'limit': 500
         }
-        return self.SendMessage(message, get_file_list_pb2.GetFileList(), self.PHONE_COMMAND_GET_FILE_LIST)
+        return self.SendMessage(message, self.PHONE_COMMAND_GET_FILE_LIST)
 
 
     def DeleteCameraFile(self):
@@ -552,29 +579,29 @@ class camera:
         pass
 
 
-    def SetNormalVideoOptions(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None):
+    def SetNormalVideoOptions(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None, white_balance=None):
         """ Set video capture settings """
         # Labels on camera display are not updated.
-        # Resolutions: RES_1920_1080P30, RES_1920_1080P24, ...
-        #message = {
-        #    'optionTypes': [
-        #        'EXPOSURE_BIAS',
-        #        'WHITE_BALANCE_VALUE',
-        #        'VIDEO_GAMMA_MODE',
-        #        'VIDEO_EXPOSURE_OPTIONS',
-        #        'VIDEO_ISO_TOP_LIMIT',
-        #        'RECORD_RESOLUTION',
-        #        'FOV_TYPE',
-        #        'FOCAL_LENGTH_VALUE'],
-        #    'value': {
-        #        'gamma_mode': 'VIVID',
-        #        'video_exposure': {
-        #            'iso': 400,
-        #            'shutter_speed': 0.03333333333333333 },
-        #        'record_resolution': 'RES_1920_1080P30',
-        #        'fov_type': 'FOV_ULTRAWIDE',
-        #        'focal_length_value': 17.4 },
-        #    'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
+        # Request message example:
+        # message = {
+        #     'optionTypes': [
+        #         'EXPOSURE_BIAS',
+        #         'WHITE_BALANCE_VALUE',
+        #         'VIDEO_GAMMA_MODE',
+        #         'VIDEO_EXPOSURE_OPTIONS',
+        #         'VIDEO_ISO_TOP_LIMIT',
+        #         'RECORD_RESOLUTION',
+        #         'FOV_TYPE',
+        #         'FOCAL_LENGTH_VALUE'],
+        #     'value': {
+        #         'gamma_mode': 'VIVID',
+        #         'video_exposure': {
+        #             'iso': 400,
+        #             'shutter_speed': 0.03333333333333333 },
+        #         'record_resolution': 'RES_1920_1080P30',
+        #         'fov_type': 'FOV_ULTRAWIDE',
+        #         'focal_length_value': 17.4 },
+        #     'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
         #}
         message = {}
         message['optionTypes'] = []
@@ -592,15 +619,25 @@ class camera:
         if gamma_mode is not None:
             message['optionTypes'].append('VIDEO_GAMMA_MODE')
             message['value']['gamma_mode'] = gamma_mode
+        if white_balance is not None:
+            message['optionTypes'].append('WHITE_BALANCE')
+            message['value']['white_balance'] = white_balance
         self.logger.info('Sending message: %s' % (message,))
-        return self.SendMessage(message, set_photography_options_pb2.SetPhotographyOptions(), self.PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS)
+        return self.SendMessage(message, self.PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS)
 
 
     def GetNormalVideoOptions(self):
-        # WARNING: For focal_length_value: 22.0 the corresponding fov_type: FOV_WIDE is not returned.
+        # WARNING: Sometimes, when the camera display is off (power saving),
+        # changes to the FOCAL_LENGTH_VALUE will not result in the subsequent
+        # PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS requests. Sometimes FOV_WIDE
+        # is not returned at all. The same happens when asking for VIDEO_FOV
+        # using PHONE_COMMAND_GET_OPTIONS.
+        # It seems that closing and re-opening the socket connection will
+        # restore the correct reported value.
         message = {
             'option_types': [
                 'EXPOSURE_BIAS',
+                'WHITE_BALANCE',
                 'WHITE_BALANCE_VALUE',
                 'VIDEO_GAMMA_MODE',
                 'VIDEO_EXPOSURE_OPTIONS',
@@ -610,19 +647,19 @@ class camera:
                 'FOCAL_LENGTH_VALUE'],
             'function_mode': 'FUNCTION_MODE_NORMAL_VIDEO'
         }
-        return self.SendMessage(message, get_photography_options_pb2.GetPhotographyOptions(), self.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS)
+        return self.SendMessage(message, self.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS)
 
 
     def StartCapture(self):
         message = {
             'mode': 'Capture_MODE_NORMAL'
         }
-        return self.SendMessage(message, start_capture_pb2.StartCapture(), self.PHONE_COMMAND_START_CAPTURE)
+        return self.SendMessage(message, self.PHONE_COMMAND_START_CAPTURE)
 
 
     def StopCapture(self):
         message = {}
-        return self.SendMessage(message, stop_capture_pb2.StopCapture(), self.PHONE_COMMAND_STOP_CAPTURE)
+        return self.SendMessage(message, self.PHONE_COMMAND_STOP_CAPTURE)
 
 
     def GetExposureSettings(self):
@@ -650,19 +687,23 @@ class camera:
             'resolution1': 'RES_424_240P15',
             'previewStreamNum': 1
         }
-        return self.SendMessage(message, start_live_stream_pb2.StartLiveStream(), self.PHONE_COMMAND_START_LIVE_STREAM)
+        return self.SendMessage(message, self.PHONE_COMMAND_START_LIVE_STREAM)
 
 
     def StopLiveStream(self):
         message = {}
-        return self.SendMessage(message, stop_live_stream_pb2.StopLiveStream(), self.PHONE_COMMAND_STOP_LIVE_STREAM)
+        return self.SendMessage(message, self.PHONE_COMMAND_STOP_LIVE_STREAM)
 
 
     def GetCameraUUID(self):
         pass
 
+
     def GetCaptureCurrentStatus(self):
-        pass
+        """ Get current capture status """
+        message = {}
+        return self.SendMessage(message, self.PHONE_COMMAND_GET_CURRENT_CAPTURE_STATUS)
+
 
     def SetTimeLapseOption(self):
         pass

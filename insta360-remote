@@ -22,16 +22,20 @@ __license__ = "GPLv3-or-later"
 __email__ = "niccolo@rigacci.org"
 __version__ = "0.1.0"
 
-STATUS_WIN_HEIGHT = 3
-LOG_WIN_HEIGHT = 20
+# Windows height, with borders.
+MAIN_WIN_HEIGHT = 13
+STATUS_WIN_HEIGHT = 4
+
+KEY_ESC = 27
 
 MAIN_MENU = """
 1) Start Capture
 2) Stop Capture
 3) Take Photo
-4) Set Video Resolution
-5) Set Field of View
+4) Video Resolution
+5) Field of View
 6) Gamma & White
+7) Presets
 
 Q) Quit
 """
@@ -56,7 +60,7 @@ FOV_MENU = """
 """
 VIDEO_OPT_MENU = """
 1) Gamma VIVID
-2) Gamma FLAT
+2) Gamma STANDARD
 3) Gamma LOG
 4) White Balance
 
@@ -72,11 +76,21 @@ VIDEO_WHITE_BALANCE = """
 
 9) Back
 """
+PRESETS_MENU = """
+1) 1080@60, 17.0mm, STANDARD, Auto WB
+2) Custom Set #2
+3) Custom Set #3
+
+9) Back
+"""
 
 logger = None
 win_status = None
+capture_state = None
 battery_level = None
 free_space = None
+gamma_mode = None
+white_balance_value = None
 record_resolution = None
 focal_length_value = 0
 fov_type = None
@@ -121,9 +135,9 @@ def redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_loggin
         rows, cols = screen.getmaxyx()
     screen.clear()
     screen.refresh()
-    boxed_window_mv(box_menu, win_menu, 0, 0, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 'Insta360 Remote')
-    boxed_window_mv(box_status, win_status, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, 0, STATUS_WIN_HEIGHT, cols, 'Batt. Charge / SD Free / Resolution / FOV')
-    boxed_window_mv(box_logging, win_logging, rows - LOG_WIN_HEIGHT, 0, LOG_WIN_HEIGHT, cols, 'Logging')
+    boxed_window_mv(box_menu, win_menu, 0, 0, MAIN_WIN_HEIGHT, cols, 'Insta360 Remote')
+    boxed_window_mv(box_status, win_status, MAIN_WIN_HEIGHT, 0, STATUS_WIN_HEIGHT, cols, 'Rec, Battery, SD Free, Resolution, FOV')
+    boxed_window_mv(box_logging, win_logging, MAIN_WIN_HEIGHT + STATUS_WIN_HEIGHT, 0, rows - MAIN_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 'Logging')
     win_menu.clear()
     win_status.clear()
     win_logging.clear()
@@ -143,47 +157,65 @@ def pretty_bytes(bytes_int):
 
 
 def handle_message(msg):
-    """ Handle the messages received from the Insta360 and update the status """
+    """ Handle the messages received from the Insta360 updating the status bar """
     global logger, win_status
-    global battery_level, free_space, record_resolution, focal_length_value, fov_type
-    logger.info('Received message: %s' % (msg,))
-    # The Protobuf message is passed as a Python dictionary; beware of
-    # indexes which are camelCase without underscores.
-    # Parse message from GetOptionsResp()
-    try:
-        battery_level = int(msg['value']['batteryStatus']['batteryLevel'])
-    except:
-        pass
-    try:
-        free_space = int(msg['value']['storageState']['freeSpace'])
-    except:
-        pass
-    # Parse message from GetPhotographyOptionsResp()
-    # WARNING: For focal_length_value: 22.0 the corresponding fov_type: FOV_WIDE is not returned.
-    # GetPhotographyOptionsResp: value { record_resolution: RES_1920_1080P24 }
-    # GetPhotographyOptionsResp: value { fov_type: FOV_ULTRAWIDE }
-    # GetPhotographyOptionsResp: value { focal_length_value: 17.399999618530273 }
-    # GetPhotographyOptionsResp: value { gamma_mode: VIVID }
-    #try:
-    #    gamma_mode = msg['value']['gamma_mode']
-    #except:
-    #    gamma_mode = None
-    try:
-        record_resolution = msg['value']['recordResolution']
-    except:
-        pass
-    try:
-        focal_length_value = float(msg['value']['focalLengthValue'])
-    except:
-        pass
-    try:
-        fov_type = msg['value']['fovType'][4:]
-    except:
-        pass
+    global capture_state, battery_level, free_space, gamma_mode, white_balance_value, record_resolution, focal_length_value, fov_type
+    # The Protobuf message is passed as a Python dictionary;
+    # beware of indexes which are camelCase without underscores.
+    logger.info('Handling message: %s' % (msg,))
+    if msg['response_code'] == insta360.camera.CAMERA_NOTIFICATION_CURRENT_CAPTURE_STATUS:
+        try:
+            capture_state = msg['state']
+        except:
+            pass
+    elif msg['response_code'] == insta360.camera.RESPONSE_CODE_OK:
+        if msg['message_code'] == insta360.camera.PHONE_COMMAND_GET_OPTIONS:
+            try:
+                battery_level = int(msg['value']['batteryStatus']['batteryLevel'])
+            except:
+                pass
+            try:
+                free_space = int(msg['value']['storageState']['freeSpace'])
+            except:
+                pass
+        elif msg['message_code'] == insta360.camera.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS:
+            try:
+                gamma_mode = msg['value']['gammaMode']
+            except:
+                pass
+            try:
+                white_balance_value = msg['value']['whiteBalanceValue']
+            except:
+                pass
+            try:
+                record_resolution = msg['value']['recordResolution'][4:]
+            except:
+                pass
+            try:
+                focal_length_value = float(msg['value']['focalLengthValue'])
+            except:
+                pass
+            try:
+                fov_type = msg['value']['fovType'][4:]
+            except:
+                pass
+        elif msg['message_code'] == insta360.camera.PHONE_COMMAND_GET_CURRENT_CAPTURE_STATUS:
+            try:
+                capture_state = msg['status']['state']
+                capture_time = msg['status']['captureTime']
+            except:
+                pass
 
-    status = '%s%% / %s / %s / %.1fmm %s' % (battery_level, pretty_bytes(free_space), record_resolution, focal_length_value, fov_type)
-    logger.info('New status: %s' % (status,))
+
+    status_log = '%s, %s%%, %s, %s, %.1fmm %s, Gamma: %s, WB: %s' % (capture_state, battery_level, pretty_bytes(free_space), record_resolution, focal_length_value, fov_type, gamma_mode, white_balance_value)
+    logger.info('Status updated: %s' % (status_log,))
+
     win_status.clear()
+    if capture_state in [None, 'NOT_CAPTURE', 'SINGLE_SHOOTING', 'HDR_SHOOTING', 'SELFIE_RECORDING_CAPTURE']:
+        win_status.addstr(' S ', curses.color_pair(curses.COLOR_WHITE))
+    else:
+        win_status.addstr(' R ', curses.color_pair(curses.COLOR_RED))
+    status = ' %s%%, %s, %s, %.1fmm %s\nGamma: %s, WB: %s' % (battery_level, pretty_bytes(free_space), record_resolution, focal_length_value, fov_type, gamma_mode, white_balance_value)
     win_status.addstr(status)
     win_status.refresh()
 
@@ -195,14 +227,20 @@ def main(screen):
     curses.initscr()
     curses.curs_set(0)
     screen.keypad(True)
+
+    # Prepare red and white colors for recording status.
+    curses.start_color()
+    curses.init_pair(curses.COLOR_RED, curses.COLOR_BLACK, curses.COLOR_RED)
+    curses.init_pair(curses.COLOR_WHITE, curses.COLOR_BLACK, curses.COLOR_WHITE)
+
     # Initialize boxes.
     rows, cols = screen.getmaxyx()
-    box_menu = curses.newwin(rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 0, 0)
-    win_menu = box_menu.derwin(rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT - 2, cols - 2, 1, 1)
-    box_status = curses.newwin(STATUS_WIN_HEIGHT, cols, rows - LOG_WIN_HEIGHT - STATUS_WIN_HEIGHT, 0)
+    box_menu = curses.newwin(MAIN_WIN_HEIGHT, cols, 0, 0)
+    win_menu = box_menu.derwin(MAIN_WIN_HEIGHT - 2, cols - 2, 1, 1)
+    box_status = curses.newwin(STATUS_WIN_HEIGHT, cols, MAIN_WIN_HEIGHT, 0)
     win_status = box_status.derwin(STATUS_WIN_HEIGHT - 2, cols - 2, 1, 1)
-    box_logging = curses.newwin(LOG_WIN_HEIGHT, cols, rows - LOG_WIN_HEIGHT, 0)
-    win_logging = box_logging.derwin(LOG_WIN_HEIGHT - 2, cols - 2, 1, 1)
+    box_logging = curses.newwin(rows - MAIN_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, MAIN_WIN_HEIGHT + STATUS_WIN_HEIGHT, 0)
+    win_logging = box_logging.derwin(rows - MAIN_WIN_HEIGHT - STATUS_WIN_HEIGHT - 2, cols - 2, 1, 1)
     redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_logging, win_logging)
 
     win_logging.scrollok(True)
@@ -227,9 +265,23 @@ def main(screen):
     cam.Open()
 
     current_menu = MAIN_MENU
-    win_menu.timeout(10000)
+    win_menu.timeout(6000)
     cam.GetCameraInfo()
     cam.GetNormalVideoOptions()
+    cam.GetCaptureCurrentStatus()
+
+    # TESTING: Fake status message.
+    #msg = {
+    #    'response_code': insta360.camera.RESPONSE_CODE_OK,
+    #    'message_code': insta360.camera.PHONE_COMMAND_GET_OPTIONS,
+    #    'value': { 'batteryStatus': { 'batteryLevel': 65 }, 'storageState': { 'freeSpace': 34359738368 } } }
+    #handle_message(msg)
+    #msg = {
+    #    'response_code': insta360.camera.RESPONSE_CODE_OK,
+    #    'message_code': insta360.camera.PHONE_COMMAND_GET_PHOTOGRAPHY_OPTIONS,
+    #    'value': { 'gammaMode': 'VIVID', 'whiteBalanceValue': 2800, 'recordResolution': 'RES_1920_1080P30', 'focalLengthValue': 22.2, 'fovType': 'FOV_LINEAR' } }
+    #handle_message(msg)
+
     while True:
         win_menu.clear()
         win_menu.addstr(current_menu)
@@ -242,6 +294,7 @@ def main(screen):
             # Timeout waiting key: refresh status.
             cam.GetCameraInfo()
             cam.GetNormalVideoOptions()
+            cam.GetCaptureCurrentStatus()
             continue
         if current_menu == MAIN_MENU:
             if key == ord('1'):
@@ -256,12 +309,14 @@ def main(screen):
                 current_menu = FOV_MENU
             elif key == ord('6'):
                 current_menu = VIDEO_OPT_MENU
+            elif key == ord('7'):
+                current_menu = PRESETS_MENU
             elif key == ord('q') or key == ord('Q'):
                 break
             else:
                 logger.debug('getkey() returned %s' % (key,))
         elif current_menu == VIDEO_RESOLUTION_MENU:
-            if key == ord('9'):
+            if key == ord('9') or key == KEY_ESC:
                 current_menu = MAIN_MENU
             elif key == ord('1'):
                 cam.SetNormalVideoOptions(record_resolution='RES_3840_2160P60')
@@ -277,7 +332,7 @@ def main(screen):
                 cam.SetNormalVideoOptions(record_resolution='RES_1920_1080P30')
             cam.GetNormalVideoOptions()
         elif current_menu == FOV_MENU:
-            if key == ord('9'):
+            if key == ord('9') or key == KEY_ESC:
                 current_menu = MAIN_MENU
             elif key == ord('1'):
                 cam.SetNormalVideoOptions(focal_length_value=17.0)
@@ -291,19 +346,44 @@ def main(screen):
                 cam.SetNormalVideoOptions(focal_length_value=50.0)
             cam.GetNormalVideoOptions()
         elif current_menu == VIDEO_OPT_MENU:
-            if key == ord('9'):
+            if key == ord('9') or key == KEY_ESC:
                 current_menu = MAIN_MENU
             elif key == ord('1'):
                 cam.SetNormalVideoOptions(gamma_mode='VIVID')
             elif key == ord('2'):
-                cam.SetNormalVideoOptions(gamma_mode='FLAT')
+                cam.SetNormalVideoOptions(gamma_mode='STANDARD')
             elif key == ord('3'):
                 cam.SetNormalVideoOptions(gamma_mode='LOG')
             elif key == ord('4'):
                 current_menu = VIDEO_WHITE_BALANCE
+            cam.GetNormalVideoOptions()
         elif current_menu == VIDEO_WHITE_BALANCE:
-            if key == ord('9'):
+            if key == ord('9') or key == KEY_ESC:
                 current_menu = VIDEO_OPT_MENU
+            elif key == ord('1'):
+                cam.SetNormalVideoOptions(white_balance='WB_AUTO')      # white_balance_value = 0
+            elif key == ord('2'):
+                cam.SetNormalVideoOptions(white_balance='WB_2700K')     # white_balance_value = 2800
+            elif key == ord('3'):
+                cam.SetNormalVideoOptions(white_balance='WB_4000K')     # white_balance_value = 4000
+            elif key == ord('4'):
+                cam.SetNormalVideoOptions(white_balance='WB_5000K')     # white_balance_value = 6500
+            elif key == ord('5'):
+                cam.SetNormalVideoOptions(white_balance='WB_6500K')     # white_balance_value = 7500
+            elif key == ord('6'):
+                cam.SetNormalVideoOptions(white_balance='WB_7500K')     # white_balance_value = 5000
+            cam.GetNormalVideoOptions()
+        elif current_menu == PRESETS_MENU:
+            if key == ord('9') or key == KEY_ESC:
+                current_menu = MAIN_MENU
+            elif key == ord('1'):
+                cam.SetNormalVideoOptions(
+                    record_resolution='RES_1920_1080P60',
+                    focal_length_value=17.0,
+                    gamma_mode='STANDARD',
+                    white_balance='WB_AUTO'
+                )
+            cam.GetNormalVideoOptions()
 
     cam.Close()
     curses.endwin()
