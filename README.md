@@ -87,5 +87,7 @@ can run it from an Android smartphone if you install the
 [Termux](https://termux.dev/en/) app and the required Python 
 libraries.
 
+![insta360-remote screenshot](img/insta360-remote.png "insta360-remote screenshot")
+
 
 More info here: [Insta360: WiFi protocol reverse engineering](https://www.rigacci.org/wiki/doku.php/doc/appunti/hardware/insta360_one_rs_wifi_reverse_engineering).
