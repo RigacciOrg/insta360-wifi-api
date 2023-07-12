@@ -25,6 +25,8 @@ __version__ = "0.1.0"
 # Windows height, with borders.
 MAIN_WIN_HEIGHT = 13
 STATUS_WIN_HEIGHT = 4
+MIN_ROWS = 20
+MIN_COLS = 46
 
 KEY_ESC = 27
 
@@ -115,32 +117,32 @@ class CursesLogHandler(logging.Handler):
 
 def boxed_window_mv(outer, inner, y, x, h, w, title):
     """ Move and resize a window with border at (x, y) """
-    outer.mvwin(y, x)
     outer.resize(h, w)
+    outer.mvwin(y, x)
+    outer.clear()
     outer.box()
     outer.addstr(0, 2, ' %s ' % (title,))
     outer.refresh()
-    inner.mvderwin(1, 1)
     inner.resize(h - 2, w - 2)
+    inner.mvderwin(1, 1)
+    inner.clear()
     inner.refresh()
 
 
 def redraw_screen(screen, box_menu, win_menu, box_status, win_status, box_logging, win_logging):
     """ Calculate the sizes of the windows (menu, status and log) and refresh them """
     rows, cols = screen.getmaxyx()
-    if rows < 20 or cols < 30:
-        rows = max(20, rows)
-        cols = max(30, cols)
+    if rows < MIN_ROWS or cols < MIN_COLS:
+        rows = max(MIN_ROWS, rows)
+        cols = max(MIN_COLS, cols)
         screen.resize(rows, cols)
         rows, cols = screen.getmaxyx()
+    curses.resizeterm(rows, cols)
     screen.clear()
     screen.refresh()
     boxed_window_mv(box_menu, win_menu, 0, 0, MAIN_WIN_HEIGHT, cols, 'Insta360 Remote')
     boxed_window_mv(box_status, win_status, MAIN_WIN_HEIGHT, 0, STATUS_WIN_HEIGHT, cols, 'Rec, Battery, SD Free, Resolution, FOV')
     boxed_window_mv(box_logging, win_logging, MAIN_WIN_HEIGHT + STATUS_WIN_HEIGHT, 0, rows - MAIN_WIN_HEIGHT - STATUS_WIN_HEIGHT, cols, 'Logging')
-    win_menu.clear()
-    win_status.clear()
-    win_logging.clear()
 
 
 def pretty_bytes(bytes_int):
