@@ -70,11 +70,11 @@ VIDEO_OPT_MENU = """
 """
 VIDEO_WHITE_BALANCE = """
 1) AUTO
-2) 2700K
-3) 4000K
-4) 5000K
-5) 6500K
-6) 7500K
+2) 2700K Tungsten
+3) 4000K Fluorescent
+4) 5000K Daylight
+5) 6500K Cloudy
+6) 7500K Shade
 
 9) Back
 """
@@ -363,17 +363,17 @@ def main(screen):
             if key == ord('9') or key == KEY_ESC:
                 current_menu = VIDEO_OPT_MENU
             elif key == ord('1'):
-                cam.SetNormalVideoOptions(white_balance='WB_AUTO')      # white_balance_value = 0
+                cam.SetNormalVideoOptions(white_balance='WB_AUTO') # white_balance_value = 0
             elif key == ord('2'):
-                cam.SetNormalVideoOptions(white_balance='WB_2700K')     # white_balance_value = 2800
+                cam.SetNormalVideoOptions(white_balance_value=2800) # white_balance = WB_2700K ?
             elif key == ord('3'):
-                cam.SetNormalVideoOptions(white_balance='WB_4000K')     # white_balance_value = 4000
+                cam.SetNormalVideoOptions(white_balance_value=4000) # white_balance = WB_4000K
             elif key == ord('4'):
-                cam.SetNormalVideoOptions(white_balance='WB_5000K')     # white_balance_value = 6500
+                cam.SetNormalVideoOptions(white_balance_value=5000) # white_balance = WB_7500K ?
             elif key == ord('5'):
-                cam.SetNormalVideoOptions(white_balance='WB_6500K')     # white_balance_value = 7500
+                cam.SetNormalVideoOptions(white_balance_value=6500) # white_balance = WB_5000K ?
             elif key == ord('6'):
-                cam.SetNormalVideoOptions(white_balance='WB_7500K')     # white_balance_value = 5000
+                cam.SetNormalVideoOptions(white_balance_value=7500) # white_balance = WB_6500K ?
             cam.GetNormalVideoOptions()
         elif current_menu == PRESETS_MENU:
             if key == ord('9') or key == KEY_ESC:
