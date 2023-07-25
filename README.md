@@ -2,6 +2,12 @@
 
 **Python scripts to talk to Insta360 action cameras using the WiFi API**
 
+The insta360.py is a Python class which partially implements the 
+WiFi API interface (TCP socket on port 6666) to communicate and 
+control an Insta360 camera. It was developed by reverse 
+engineering the communication between an **Insta360 ONE RS** 
+camera and the Android app.
+
 ## Connecting to the WiFi
 
 Fortunately enough it is possibile to connect a GNU/Linux PC to 
