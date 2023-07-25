@@ -579,7 +579,7 @@ class camera:
         pass
 
 
-    def SetNormalVideoOptions(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None, white_balance=None):
+    def SetNormalVideoOptions(self, record_resolution=None, fov_type=None, focal_length_value=None, gamma_mode=None, white_balance=None, white_balance_value=None):
         """ Set video capture settings """
         # Labels on camera display are not updated.
         # Request message example:
@@ -622,6 +622,9 @@ class camera:
         if white_balance is not None:
             message['optionTypes'].append('WHITE_BALANCE')
             message['value']['white_balance'] = white_balance
+        if white_balance_value is not None:
+            message['optionTypes'].append('WHITE_BALANCE_VALUE')
+            message['value']['white_balance_value'] = white_balance_value
         self.logger.info('Sending message: %s' % (message,))
         return self.SendMessage(message, self.PHONE_COMMAND_SET_PHOTOGRAPHY_OPTIONS)
 
